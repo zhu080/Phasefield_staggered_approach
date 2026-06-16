@@ -1142,18 +1142,32 @@ namespace PhaseField
 
     AffineConstraints<double> m_constraints_phasefield;
     AffineConstraints<double> m_constraints_displacement;
+    AffineConstraints<double> m_constraints_acc;
 
     SparsityPattern m_sparsity_pattern_phasefield;
     SparsityPattern m_sparsity_pattern_displacement;
 
     SparseMatrix<double> m_system_matrix_phasefield;
+    SparseMatrix<double> m_system_matrix_stiffness;
     SparseMatrix<double> m_system_matrix_displacement;
+    SparseMatrix<double> m_system_matrix_mass;
 
     Vector<double> m_system_rhs_phasefield;
+    Vector<double> m_system_rhs_stiffness;
     Vector<double> m_system_rhs_displacement;
+    Vector<double> m_initial_force;
+    Vector<double> m_system_rhs_attached;
+    Vector<double> m_delta_F;
+    Vector<double> m_internal_force;
 
     Vector<double> m_solution_phasefield;
     Vector<double> m_solution_displacement;
+    Vector<double> m_solution_delta_u;
+    Vector<double> m_solution_velo;
+    Vector<double> m_solution_acc;
+    Vector<double> m_old_delta_u;
+    Vector<double> m_old_velo;
+    Vector<double> m_old_acc;
     Vector<double> m_solution_previous_timestep_phasefield;
     Vector<double> m_solution_previous_timestep_displacement;
 
@@ -1196,8 +1210,10 @@ namespace PhaseField
     void make_grid_case_4();
     void make_grid_case_9();
     void make_grid_case_12();
+    void make_grid_case_13();
 
     void setup_system();
+    void initialize_step();
     void setup_system_phasefield();
     void setup_system_displacement();
 
@@ -1205,9 +1221,13 @@ namespace PhaseField
                                      const unsigned int itr_stagger);
     void make_constraints_displacement(const unsigned int it_nr,
                                        const unsigned int itr_stagger);
+    void make_initial_constraints();
+    void make_constraints_acc();
 
     void assemble_system_phasefield();
+    void assemble_system_stiffness();
     void assemble_system_displacement();
+    void assemble_system_mass();
 
     void assemble_rhs_phasefield();
     void assemble_rhs_displacement();
@@ -1221,8 +1241,11 @@ namespace PhaseField
     unsigned int solve_nonlinear_displacement_newton_raphson(
         Vector<double> &solution_delta_displacement, unsigned int itr_stagger);
     void solve_linear_system_displacement(Vector<double> &newton_update);
-
+    void simplified_linear_solver();
     void update_history_field_step();
+    void load_previous_vectors();
+    void combine_vectors(double beta, double gamma);
+    void update_vectors(double beta, double gamma);
 
     void output_results() const;
     void assemble_system_one_cell_phasefield(
@@ -1233,10 +1256,20 @@ namespace PhaseField
         const typename DoFHandler<dim>::active_cell_iterator &cell,
         ScratchData_RHS_phasefield &scratch,
         PerTaskData_RHS_phasefield &data) const;
+    
+    void assemble_system_one_cell_stiffness(
+          const typename DoFHandler<dim>::active_cell_iterator &cell,
+          ScratchData_ASM_displacement &scratch,
+          PerTaskData_ASM_displacement &data) const;
+    
     void assemble_system_one_cell_displacement(
         const typename DoFHandler<dim>::active_cell_iterator &cell,
         ScratchData_ASM_displacement &scratch,
         PerTaskData_ASM_displacement &data) const;
+    void assemble_system_one_cell_mass(
+          const typename DoFHandler<dim>::active_cell_iterator &cell,
+          ScratchData_ASM_displacement &scratch,
+          PerTaskData_ASM_displacement &data) const;
     void assemble_rhs_one_cell_displacement(
         const typename DoFHandler<dim>::active_cell_iterator &cell,
         ScratchData_RHS_displacement &scratch,
@@ -2368,6 +2401,9 @@ namespace PhaseField
       make_grid_case_9();
     else if (m_parameters.m_scenario == 12)
       make_grid_case_12();
+      
+    else if (m_parameters.m_scenario == 13)
+      make_grid_case_13();
     else
       Assert(false, ExcMessage("The scenario has not been implemented!"));
 
@@ -2840,9 +2876,9 @@ namespace PhaseField
 
     AssertThrow(dim == 2, ExcMessage("The dimension has to be 2D!"));
 
-    double const length = 200.0;
+    double const length = 20.0;
     double const width = 1.0;
-    double const h_size = 0.1;
+    double const h_size = 0.25;
 
     std::vector<unsigned int> repetitions(dim, 1);
     repetitions[0] = length / h_size;
@@ -2869,6 +2905,49 @@ namespace PhaseField
             face->set_boundary_id(4);
         }
       }
+  }
+
+template <int dim> void PhaseFieldSplitSolve<dim>::make_grid_case_13()
+  {
+    for (unsigned int i = 0; i < 80; ++i)
+    m_logfile << "*";
+    m_logfile << std::endl;
+    m_logfile << "\t\t\t1-D bar (structured)" << std::endl;
+    for (unsigned int i = 0; i < 80; ++i)
+      m_logfile << "*";
+    m_logfile << std::endl;
+
+   AssertThrow(dim == 2, ExcMessage("The dimension has to be 2D!"));
+
+    double const length = 20.0;
+    double const width = 1.0;
+    double const h_size = 0.25;
+
+    std::vector<unsigned int> repetitions(dim, 1);
+    repetitions[0] = length / h_size;
+    repetitions[1] = width / h_size;
+
+    GridGenerator::subdivided_hyper_rectangle(m_triangulation, repetitions,
+                                            Point<dim>(0.0, 0.0),
+                                            Point<dim>(length, width));
+
+  for (const auto &cell : m_triangulation.active_cell_iterators())
+    for (const auto &face : cell->face_iterators())
+    {
+      if (face->at_boundary() == true)
+      {
+        if ((std::fabs(face->center()[0] - 0.0) < 1.0e-9))
+          face->set_boundary_id(0);
+        else if ((std::fabs(face->center()[0] - length) < 1.0e-9))
+          face->set_boundary_id(1);
+        else if ((std::fabs(face->center()[1] - 0.0) < 1.0e-9))
+          face->set_boundary_id(2);
+        else if ((std::fabs(face->center()[1] - width) < 1.0e-9))
+          face->set_boundary_id(3);
+        else
+          face->set_boundary_id(4);
+      }
+    }
   }
 
   template <int dim> void PhaseFieldSplitSolve<dim>::setup_system()
@@ -2898,6 +2977,42 @@ namespace PhaseField
     m_timer.leave_subsection();
   }
 
+  template <int dim> void PhaseFieldSplitSolve<dim>::initialize_step()
+  {
+      make_initial_constraints();
+      assemble_system_stiffness();//K
+      SolverControl solver_control_acc(1e6, 1e-10);
+      SolverCG<Vector<double>> cg_acc(solver_control_acc);
+
+      PreconditionJacobi<SparseMatrix<double>> preconditioner_acc;
+      preconditioner_acc.initialize(m_system_matrix_stiffness, 1.0);
+      cg_acc.solve(m_system_matrix_stiffness, m_solution_displacement,
+                                      m_system_rhs_stiffness,
+                                      preconditioner_acc);
+      m_constraints_displacement.distribute(m_solution_displacement);
+        m_constraints_displacement.clear();
+        m_constraints_displacement.close();
+        //m_solution_displacement=0.0;
+      
+      assemble_system_stiffness();//assemble K again without any constraint
+      //deltaF=Ku
+      m_system_matrix_stiffness.vmult(m_delta_F, m_solution_displacement);
+
+      make_constraints_acc();
+      assemble_system_mass();
+      //initial acc using Newtwon 2nd law: Ma=F-Ku
+      m_initial_force-=m_delta_F;
+      m_constraints_acc.distribute(m_initial_force);
+      preconditioner_acc.initialize(m_system_matrix_mass, 1.0);
+      cg_acc.solve(m_system_matrix_mass, m_solution_acc,
+                                    m_initial_force,
+                                    preconditioner_acc);
+      m_constraints_acc.distribute(m_solution_acc);
+      output_results();
+      m_constraints_acc.clear();
+      m_constraints_acc.close();
+  }
+
   template <int dim> void PhaseFieldSplitSolve<dim>::setup_system_phasefield()
   {
     m_dof_handler_phasefield.distribute_dofs(m_fe_phasefield);
@@ -2923,12 +3038,27 @@ namespace PhaseField
   {
     m_dof_handler_displacement.distribute_dofs(m_fe_displacement);
     m_solution_displacement.reinit(m_dof_handler_displacement.n_dofs());
+    m_solution_delta_u.reinit(m_dof_handler_displacement.n_dofs());
+    m_solution_velo.reinit(m_dof_handler_displacement.n_dofs());
+    m_solution_acc.reinit(m_dof_handler_displacement.n_dofs());
+    m_old_delta_u.reinit(m_dof_handler_displacement.n_dofs());
+    m_old_velo.reinit(m_dof_handler_displacement.n_dofs());
+    m_old_acc.reinit(m_dof_handler_displacement.n_dofs());
+    m_system_rhs_stiffness.reinit(m_dof_handler_displacement.n_dofs());
     m_system_rhs_displacement.reinit(m_dof_handler_displacement.n_dofs());
-
+    m_system_rhs_attached.reinit(m_dof_handler_displacement.n_dofs());
+    m_delta_F.reinit(m_dof_handler_displacement.n_dofs());
+      m_internal_force.reinit(m_dof_handler_displacement.n_dofs());
+    m_initial_force.reinit(m_dof_handler_displacement.n_dofs());
     m_constraints_displacement.clear();
     DoFTools::make_hanging_node_constraints(m_dof_handler_displacement,
                                             m_constraints_displacement);
     m_constraints_displacement.close();
+      
+    m_constraints_acc.clear();
+    DoFTools::make_hanging_node_constraints(m_dof_handler_displacement,
+                                              m_constraints_acc);
+    m_constraints_acc.close();
 
     DynamicSparsityPattern dsp(m_dof_handler_displacement.n_dofs(),
                                m_dof_handler_displacement.n_dofs());
@@ -2937,7 +3067,9 @@ namespace PhaseField
                                     /*keep_constrained_dofs = */ false);
     m_sparsity_pattern_displacement.copy_from(dsp);
 
+    m_system_matrix_stiffness.reinit(m_sparsity_pattern_displacement);
     m_system_matrix_displacement.reinit(m_sparsity_pattern_displacement);
+    m_system_matrix_mass.reinit(m_sparsity_pattern_displacement);
   }
 
   template <int dim>
@@ -2988,6 +3120,85 @@ namespace PhaseField
       }
     }
     m_constraints_phasefield.close();
+  }
+
+  template <int dim>
+  void PhaseFieldSplitSolve<dim>::make_initial_constraints()
+  {
+      m_constraints_displacement.clear();
+      DoFTools::make_hanging_node_constraints(m_dof_handler_displacement,
+                                              m_constraints_displacement);
+      const FEValuesExtractors::Scalar x_displacement(0);
+      const FEValuesExtractors::Scalar y_displacement(1);
+      const FEValuesExtractors::Scalar z_displacement(2);
+      if (m_parameters.m_scenario == 12)
+      {
+        // Dirichlet B.C. left surface (x = 0)
+        const int boundary_id_left_surface = 0;
+        VectorTools::interpolate_boundary_values(
+            m_dof_handler_displacement, boundary_id_left_surface,
+            Functions::ZeroFunction<dim>(dim), m_constraints_displacement);
+
+        /*const int boundary_id_right_surface = 1;
+        const double time_inc = m_time.get_delta_t();
+        double disp_magnitude = m_time.get_magnitude();
+        VectorTools::interpolate_boundary_values(
+            m_dof_handler_displacement, boundary_id_right_surface,
+            Functions::ConstantFunction<dim>(-0.01, dim),
+            m_constraints_displacement,
+            m_fe_displacement.component_mask(y_displacement));*/
+
+        typename Triangulation<dim>::active_vertex_iterator vertex_itr;
+        vertex_itr = m_triangulation.begin_active_vertex();
+        std::vector<types::global_dof_index> node_leftbottom(
+            m_fe_displacement.dofs_per_vertex);
+        std::vector<types::global_dof_index> node_rightbottom(
+            m_fe_displacement.dofs_per_vertex);
+
+        for (; vertex_itr != m_triangulation.end_vertex(); ++vertex_itr)
+        {
+          if ((std::fabs(vertex_itr->vertex()[0] - 0.0) < 1.0e-9) &&
+              (std::fabs(vertex_itr->vertex()[1] - 0.0) < 1.0e-9))
+          {
+            node_leftbottom = usr_utilities::get_vertex_dofs(
+                vertex_itr, m_dof_handler_displacement);
+          }
+          if ((std::fabs(vertex_itr->vertex()[0] - 20.0) < 1.0e-9) &&
+              (std::fabs(vertex_itr->vertex()[1] - 0.0) < 1.0e-9))
+          {
+            node_rightbottom = usr_utilities::get_vertex_dofs(
+                vertex_itr, m_dof_handler_displacement);
+          }
+        }
+        /*m_constraints_displacement.add_line(node_leftbottom[0]);
+        m_constraints_displacement.set_inhomogeneity(node_leftbottom[0], 0.0);
+
+        m_constraints_displacement.add_line(node_leftbottom[1]);
+        m_constraints_displacement.set_inhomogeneity(node_leftbottom[1], 0.0);
+
+        m_constraints_displacement.add_line(node_rightbottom[1]);
+        m_constraints_displacement.set_inhomogeneity(node_rightbottom[1], 0.0);*/
+      }
+      
+      if (m_parameters.m_scenario == 13)
+      {
+        // Dirichlet B.C. left surface (x = 0)
+        const int boundary_id_left_surface = 0;
+        VectorTools::interpolate_boundary_values(
+            m_dof_handler_displacement, boundary_id_left_surface,
+            Functions::ZeroFunction<dim>(dim), m_constraints_displacement);
+
+        const int boundary_id_right_surface = 1;
+        const double time_inc = m_time.get_delta_t();
+        double disp_magnitude = m_time.get_magnitude();
+        VectorTools::interpolate_boundary_values(
+            m_dof_handler_displacement, boundary_id_right_surface,
+            Functions::ConstantFunction<dim>(-0.02, dim),
+            m_constraints_displacement,
+            m_fe_displacement.component_mask(y_displacement));
+      }
+
+      m_constraints_displacement.close();
   }
 
   template <int dim>
@@ -3209,17 +3420,16 @@ namespace PhaseField
         const int boundary_id_left_surface = 0;
         VectorTools::interpolate_boundary_values(
             m_dof_handler_displacement, boundary_id_left_surface,
-            Functions::ZeroFunction<dim>(dim), m_constraints_displacement,
-            m_fe_displacement.component_mask(x_displacement));
+            Functions::ZeroFunction<dim>(dim), m_constraints_displacement);
 
-        const int boundary_id_right_surface = 1;
+        /*const int boundary_id_right_surface = 1;
         const double time_inc = m_time.get_delta_t();
         double disp_magnitude = m_time.get_magnitude();
         VectorTools::interpolate_boundary_values(
             m_dof_handler_displacement, boundary_id_right_surface,
             Functions::ConstantFunction<dim>(disp_magnitude * time_inc, dim),
             m_constraints_displacement,
-            m_fe_displacement.component_mask(x_displacement));
+            m_fe_displacement.component_mask(y_displacement));*/
 
         typename Triangulation<dim>::active_vertex_iterator vertex_itr;
         vertex_itr = m_triangulation.begin_active_vertex();
@@ -3236,21 +3446,30 @@ namespace PhaseField
             node_leftbottom = usr_utilities::get_vertex_dofs(
                 vertex_itr, m_dof_handler_displacement);
           }
-          if ((std::fabs(vertex_itr->vertex()[0] - 200.0) < 1.0e-9) &&
+          if ((std::fabs(vertex_itr->vertex()[0] - 20.0) < 1.0e-9) &&
               (std::fabs(vertex_itr->vertex()[1] - 0.0) < 1.0e-9))
           {
             node_rightbottom = usr_utilities::get_vertex_dofs(
                 vertex_itr, m_dof_handler_displacement);
           }
         }
-        m_constraints_displacement.add_line(node_leftbottom[0]);
+        /*m_constraints_displacement.add_line(node_leftbottom[0]);
         m_constraints_displacement.set_inhomogeneity(node_leftbottom[0], 0.0);
 
         m_constraints_displacement.add_line(node_leftbottom[1]);
         m_constraints_displacement.set_inhomogeneity(node_leftbottom[1], 0.0);
 
         m_constraints_displacement.add_line(node_rightbottom[1]);
-        m_constraints_displacement.set_inhomogeneity(node_rightbottom[1], 0.0);
+        m_constraints_displacement.set_inhomogeneity(node_rightbottom[1], 0.0);*/
+      }
+        
+      else if (m_parameters.m_scenario == 13)
+      {
+        // Dirichlet B.C. left surface (x = 0)
+        const int boundary_id_left_surface = 0;
+        VectorTools::interpolate_boundary_values(
+            m_dof_handler_displacement, boundary_id_left_surface,
+            Functions::ZeroFunction<dim>(dim), m_constraints_displacement);
       }
       else
         Assert(false, ExcMessage("The scenario has not been implemented!"));
@@ -3272,6 +3491,76 @@ namespace PhaseField
     }
     m_constraints_displacement.close();
   }
+
+ template <int dim>
+ void PhaseFieldSplitSolve<dim>::make_constraints_acc()
+ {
+     m_constraints_acc.clear();
+     DoFTools::make_hanging_node_constraints(m_dof_handler_displacement,
+                                             m_constraints_acc);
+     const FEValuesExtractors::Scalar x_acc(0);
+     const FEValuesExtractors::Scalar y_acc(1);
+     const FEValuesExtractors::Scalar z_acc(2);
+     if (m_parameters.m_scenario == 12)
+     {
+       // Dirichlet B.C. left surface (x = 0)
+       const int boundary_id_left_surface = 0;
+       VectorTools::interpolate_boundary_values(
+           m_dof_handler_displacement, boundary_id_left_surface,
+           Functions::ZeroFunction<dim>(dim), m_constraints_acc);
+
+       /*const int boundary_id_right_surface = 1;
+       const double time_inc = m_time.get_delta_t();
+       double disp_magnitude = m_time.get_magnitude();
+       VectorTools::interpolate_boundary_values(
+           m_dof_handler_displacement, boundary_id_right_surface,
+           Functions::ConstantFunction<dim>(disp_magnitude * time_inc, dim),
+           m_constraints_displacement,
+           m_fe_displacement.component_mask(x_displacement));*/
+
+       typename Triangulation<dim>::active_vertex_iterator vertex_itr;
+       vertex_itr = m_triangulation.begin_active_vertex();
+       std::vector<types::global_dof_index> node_leftbottom(
+           m_fe_displacement.dofs_per_vertex);
+       std::vector<types::global_dof_index> node_rightbottom(
+           m_fe_displacement.dofs_per_vertex);
+
+       for (; vertex_itr != m_triangulation.end_vertex(); ++vertex_itr)
+       {
+         if ((std::fabs(vertex_itr->vertex()[0] - 0.0) < 1.0e-9) &&
+             (std::fabs(vertex_itr->vertex()[1] - 0.0) < 1.0e-9))
+         {
+           node_leftbottom = usr_utilities::get_vertex_dofs(
+               vertex_itr, m_dof_handler_displacement);
+         }
+         if ((std::fabs(vertex_itr->vertex()[0] - 20.0) < 1.0e-9) &&
+             (std::fabs(vertex_itr->vertex()[1] - 0.0) < 1.0e-9))
+         {
+           node_rightbottom = usr_utilities::get_vertex_dofs(
+               vertex_itr, m_dof_handler_displacement);
+         }
+       }
+       /*m_constraints_acc.add_line(node_leftbottom[0]);
+       m_constraints_acc.set_inhomogeneity(node_leftbottom[0], 0.0);
+
+       m_constraints_acc.add_line(node_leftbottom[1]);
+       m_constraints_acc.set_inhomogeneity(node_leftbottom[1], 0.0);
+
+       m_constraints_acc.add_line(node_rightbottom[1]);
+       m_constraints_acc.set_inhomogeneity(node_rightbottom[1], 0.0);*/
+     }
+     
+     if (m_parameters.m_scenario == 13)
+     {
+       // Dirichlet B.C. left surface (x = 0)
+       const int boundary_id_left_surface = 0;
+       VectorTools::interpolate_boundary_values(
+           m_dof_handler_displacement, boundary_id_left_surface,
+           Functions::ZeroFunction<dim>(dim), m_constraints_acc);
+     }
+
+     m_constraints_acc.close();
+ }
 
   template <int dim>
   void PhaseFieldSplitSolve<dim>::assemble_system_one_cell_phasefield(
@@ -3571,6 +3860,195 @@ namespace PhaseField
     m_timer.leave_subsection();
   }
 
+template <int dim>
+void PhaseFieldSplitSolve<dim>::assemble_system_stiffness()
+{
+  m_timer.enter_subsection("Assemble displacement system");
+
+  // m_logfile << " ASM_SYS " << std::flush;
+
+  m_system_matrix_stiffness = 0.0;
+  m_system_rhs_stiffness = 0.0;
+
+  const UpdateFlags uf_cell(update_values | update_gradients |
+                            update_quadrature_points | update_JxW_values);
+  const UpdateFlags uf_face(update_values | update_normal_vectors |
+                            update_JxW_values);
+
+  PerTaskData_ASM_displacement per_task_data(
+      m_fe_displacement.n_dofs_per_cell());
+  ScratchData_ASM_displacement scratch_data(m_fe_displacement, m_qf_cell,
+                                            uf_cell, m_qf_face, uf_face);
+
+  auto worker =
+      [this](const typename DoFHandler<dim>::active_cell_iterator &cell,
+             ScratchData_ASM_displacement &scratch,
+             PerTaskData_ASM_displacement &data) {
+        this->assemble_system_one_cell_stiffness(cell, scratch, data);
+      };
+
+  auto copier = [this](const PerTaskData_ASM_displacement &data) {
+    this->m_constraints_displacement.distribute_local_to_global(
+        data.m_cell_matrix, data.m_cell_rhs, data.m_local_dof_indices,
+        m_system_matrix_stiffness, m_system_rhs_stiffness);
+  };
+
+  WorkStream::run(m_dof_handler_displacement.active_cell_iterators(), worker,
+                  copier, scratch_data, per_task_data);
+
+  m_timer.leave_subsection();
+}
+
+  template <int dim>
+  void PhaseFieldSplitSolve<dim>::assemble_system_mass()
+  {
+  m_timer.enter_subsection("Assemble mass system");
+
+  // m_logfile << " ASM_SYS " << std::flush;
+
+  m_system_matrix_mass = 0.0;
+  m_initial_force = 0.0;
+
+  const UpdateFlags uf_cell(update_values | update_gradients |
+                            update_quadrature_points | update_JxW_values);
+  const UpdateFlags uf_face(update_values | update_normal_vectors |
+                            update_JxW_values);
+
+  PerTaskData_ASM_displacement per_task_data(
+      m_fe_displacement.n_dofs_per_cell());
+  ScratchData_ASM_displacement scratch_data(m_fe_displacement, m_qf_cell,
+                                            uf_cell, m_qf_face, uf_face);
+
+  auto worker =
+      [this](const typename DoFHandler<dim>::active_cell_iterator &cell,
+             ScratchData_ASM_displacement &scratch,
+             PerTaskData_ASM_displacement &data) {
+        this->assemble_system_one_cell_mass(cell, scratch, data);
+      };
+
+  auto copier = [this](const PerTaskData_ASM_displacement &data) {
+    this->m_constraints_displacement.distribute_local_to_global(
+        data.m_cell_matrix, data.m_cell_rhs, data.m_local_dof_indices,
+        m_system_matrix_mass, m_initial_force);
+  };
+
+  WorkStream::run(m_dof_handler_displacement.active_cell_iterators(), worker,
+                  copier, scratch_data, per_task_data);
+
+  m_timer.leave_subsection();
+  }
+
+template <int dim>
+void PhaseFieldSplitSolve<dim>::assemble_system_one_cell_stiffness(
+    const typename DoFHandler<dim>::active_cell_iterator &cell,
+    ScratchData_ASM_displacement &scratch,
+    PerTaskData_ASM_displacement &data) const
+{
+  data.reset();
+  scratch.reset();
+  scratch.m_fe_values.reinit(cell);
+  cell->get_dof_indices(data.m_local_dof_indices);
+
+  const std::vector<std::shared_ptr<const PointHistory<dim>>> lqph =
+      m_quadrature_point_history.get_data(cell);
+  Assert(lqph.size() == m_n_q_points, ExcInternalError());
+
+  const double time_ramp = (m_time.current() / m_time.end());
+  std::vector<Tensor<1, dim>> rhs_values(m_n_q_points);
+
+  right_hand_side(scratch.m_fe_values.get_quadrature_points(), rhs_values,
+                  m_parameters.m_x_component * 1.0,
+                  m_parameters.m_y_component * 1.0,
+                  m_parameters.m_z_component * 1.0);
+
+  const FEValuesExtractors::Vector displacement(0);
+  const double rho=10.0e-9;
+  const double dt=m_time.get_delta_t();
+  const double beta=0.25;
+
+  for (const unsigned int q_point :
+       scratch.m_fe_values.quadrature_point_indices())
+  {
+    for (const unsigned int k : scratch.m_fe_values.dof_indices())
+    {
+      scratch.m_Nx[q_point][k] =
+          scratch.m_fe_values[displacement].value(k, q_point);
+      scratch.m_grad_Nx[q_point][k] =
+          scratch.m_fe_values[displacement].gradient(k, q_point);
+      scratch.m_symm_grad_Nx[q_point][k] =
+          symmetrize(scratch.m_grad_Nx[q_point][k]);
+    }
+  }
+
+  for (const unsigned int q_point :
+       scratch.m_fe_values.quadrature_point_indices())
+  {
+    const SymmetricTensor<2, dim> &cauchy_stress =
+        lqph[q_point]->get_cauchy_stress();
+    const SymmetricTensor<4, dim> &mechanical_C =
+        lqph[q_point]->get_mechanical_C();
+
+    const std::vector<Tensor<1, dim>> &N = scratch.m_Nx[q_point];
+    const std::vector<SymmetricTensor<2, dim>> &symm_grad_N =
+        scratch.m_symm_grad_Nx[q_point];
+    const double JxW = scratch.m_fe_values.JxW(q_point);
+
+    SymmetricTensor<2, dim> symm_grad_Nx_i_x_C;
+
+    for (const unsigned int i : scratch.m_fe_values.dof_indices())
+    {
+      data.m_cell_rhs(i) -= (symm_grad_N[i] * cauchy_stress) * JxW;
+      // contributions from the body force to right-hand side
+      data.m_cell_rhs(i) += N[i] * rhs_values[q_point] * JxW;
+
+      symm_grad_Nx_i_x_C = symm_grad_N[i] * mechanical_C;
+      for (const unsigned int j : scratch.m_fe_values.dof_indices_ending_at(i))
+      {
+        data.m_cell_matrix(i, j) += (symm_grad_Nx_i_x_C * symm_grad_N[j]) * JxW;
+      } // j
+    }   // i
+  }     // q_point
+
+  // if there is surface pressure, this surface pressure always applied to the
+  // reference configuration
+  unsigned int face_pressure_id = 100;
+  if (m_parameters.m_scenario == 12)
+      face_pressure_id = 1;
+  const double p0 = 0.0;
+
+  for (const auto &face : cell->face_iterators())
+    if (face->at_boundary() && face->boundary_id() == face_pressure_id)
+    {
+      scratch.m_fe_face_values.reinit(cell, face);
+
+      for (const unsigned int f_q_point :
+           scratch.m_fe_face_values.quadrature_point_indices())
+      {
+        const Tensor<1, dim> &N =
+            scratch.m_fe_face_values.normal_vector(f_q_point);
+
+          const double pressure = p0;// only add if needed for inintial step;
+        const Tensor<1, dim> traction = pressure * N;
+
+        for (const unsigned int i : scratch.m_fe_values.dof_indices())
+        {
+          const unsigned int component_i =
+              m_fe_displacement.system_to_component_index(i).first;
+          const double Ni = scratch.m_fe_face_values.shape_value(i, f_q_point);
+          const double JxW = scratch.m_fe_face_values.JxW(f_q_point);
+
+          data.m_cell_rhs(i) += (Ni * traction[component_i]) * JxW;
+        }
+      }
+    }
+
+  for (const unsigned int i : scratch.m_fe_values.dof_indices())
+    for (const unsigned int j :
+         scratch.m_fe_values.dof_indices_starting_at(i + 1))
+      data.m_cell_matrix(i, j) = data.m_cell_matrix(j, i);
+}
+
+
   template <int dim>
   void PhaseFieldSplitSolve<dim>::assemble_system_one_cell_displacement(
       const typename DoFHandler<dim>::active_cell_iterator &cell,
@@ -3595,6 +4073,9 @@ namespace PhaseField
                     m_parameters.m_z_component * 1.0);
 
     const FEValuesExtractors::Vector displacement(0);
+    const double rho=10.0e-9;
+    const double dt=m_time.get_delta_t();
+    const double beta=0.25;
 
     for (const unsigned int q_point :
          scratch.m_fe_values.quadrature_point_indices())
@@ -3634,14 +4115,17 @@ namespace PhaseField
         symm_grad_Nx_i_x_C = symm_grad_N[i] * mechanical_C;
         for (const unsigned int j : scratch.m_fe_values.dof_indices_ending_at(i))
         {
-          data.m_cell_matrix(i, j) += symm_grad_Nx_i_x_C * symm_grad_N[j] * JxW;
+          data.m_cell_matrix(i, j) += (1.0/(beta*dt*dt)*N[i]*rho*N[j]
+                                       +symm_grad_Nx_i_x_C * symm_grad_N[j]) * JxW;
         } // j
       }   // i
     }     // q_point
 
     // if there is surface pressure, this surface pressure always applied to the
     // reference configuration
-    const unsigned int face_pressure_id = 100;
+      unsigned int face_pressure_id = 100;
+      if (m_parameters.m_scenario == 12)
+          face_pressure_id = 1;
     const double p0 = 0.0;
 
     for (const auto &face : cell->face_iterators())
@@ -3655,7 +4139,7 @@ namespace PhaseField
           const Tensor<1, dim> &N =
               scratch.m_fe_face_values.normal_vector(f_q_point);
 
-          const double pressure = p0 * time_ramp;
+            const double pressure =p0;// p0 * time_ramp;
           const Tensor<1, dim> traction = pressure * N;
 
           for (const unsigned int i : scratch.m_fe_values.dof_indices())
@@ -3675,6 +4159,114 @@ namespace PhaseField
            scratch.m_fe_values.dof_indices_starting_at(i + 1))
         data.m_cell_matrix(i, j) = data.m_cell_matrix(j, i);
   }
+
+  template <int dim>
+  void PhaseFieldSplitSolve<dim>::assemble_system_one_cell_mass(
+    const typename DoFHandler<dim>::active_cell_iterator &cell,
+    ScratchData_ASM_displacement &scratch,
+    PerTaskData_ASM_displacement &data) const
+  {
+   data.reset();
+   scratch.reset();
+   scratch.m_fe_values.reinit(cell);
+   cell->get_dof_indices(data.m_local_dof_indices);
+
+   const std::vector<std::shared_ptr<const PointHistory<dim>>> lqph =
+      m_quadrature_point_history.get_data(cell);
+   Assert(lqph.size() == m_n_q_points, ExcInternalError());
+
+   const double time_ramp = (m_time.current() / m_time.end());
+   std::vector<Tensor<1, dim>> rhs_values(m_n_q_points);
+
+   right_hand_side(scratch.m_fe_values.get_quadrature_points(), rhs_values,
+                  m_parameters.m_x_component * 1.0,
+                  m_parameters.m_y_component * 1.0,
+                  m_parameters.m_z_component * 1.0);
+
+   const FEValuesExtractors::Vector displacement(0);
+   const double rho=10.0e-9;
+
+   for (const unsigned int q_point :
+        scratch.m_fe_values.quadrature_point_indices())
+   {
+     for (const unsigned int k : scratch.m_fe_values.dof_indices())
+     {
+      scratch.m_Nx[q_point][k] =
+          scratch.m_fe_values[displacement].value(k, q_point);
+      scratch.m_grad_Nx[q_point][k] =
+          scratch.m_fe_values[displacement].gradient(k, q_point);
+      scratch.m_symm_grad_Nx[q_point][k] =
+          symmetrize(scratch.m_grad_Nx[q_point][k]);
+     }
+    }
+
+   for (const unsigned int q_point :
+       scratch.m_fe_values.quadrature_point_indices())
+   {
+     const SymmetricTensor<2, dim> &cauchy_stress =
+        lqph[q_point]->get_cauchy_stress();
+     const SymmetricTensor<4, dim> &mechanical_C =
+        lqph[q_point]->get_mechanical_C();
+
+     const std::vector<Tensor<1, dim>> &N = scratch.m_Nx[q_point];
+     const std::vector<SymmetricTensor<2, dim>> &symm_grad_N =
+        scratch.m_symm_grad_Nx[q_point];
+     const double JxW = scratch.m_fe_values.JxW(q_point);
+
+     SymmetricTensor<2, dim> symm_grad_Nx_i_x_C;
+
+     for (const unsigned int i : scratch.m_fe_values.dof_indices())
+     {
+       data.m_cell_rhs(i) -= (symm_grad_N[i] * cauchy_stress) * JxW;
+      // contributions from the body force to right-hand side
+       data.m_cell_rhs(i) += N[i] * rhs_values[q_point] * JxW;
+
+       symm_grad_Nx_i_x_C = symm_grad_N[i] * mechanical_C;
+       for (const unsigned int j : scratch.m_fe_values.dof_indices_ending_at(i))
+       {
+        data.m_cell_matrix(i, j) += N[i]*rho*N[j] * JxW;
+       } // j
+     }   // i
+   }     // q_point
+
+   // if there is surface pressure, this surface pressure always applied to the
+   // reference configuration
+      unsigned int face_pressure_id = 100;
+      if (m_parameters.m_scenario == 12)
+          face_pressure_id = 1;
+   const double p0 = 0.0;
+
+   for (const auto &face : cell->face_iterators())
+     if (face->at_boundary() && face->boundary_id() == face_pressure_id)
+     {
+       scratch.m_fe_face_values.reinit(cell, face);
+
+       for (const unsigned int f_q_point :
+            scratch.m_fe_face_values.quadrature_point_indices())
+       {
+         const Tensor<1, dim> &N =
+             scratch.m_fe_face_values.normal_vector(f_q_point);
+
+           const double pressure = p0;//p0 * time_ramp;
+         const Tensor<1, dim> traction = pressure * N;
+
+         for (const unsigned int i : scratch.m_fe_values.dof_indices())
+         {
+           const unsigned int component_i =
+               m_fe_displacement.system_to_component_index(i).first;
+           const double Ni = scratch.m_fe_face_values.shape_value(i, f_q_point);
+           const double JxW = scratch.m_fe_face_values.JxW(f_q_point);
+
+           data.m_cell_rhs(i) += (Ni * traction[component_i]) * JxW;
+         }
+       }
+     }
+
+   for (const unsigned int i : scratch.m_fe_values.dof_indices())
+     for (const unsigned int j :
+          scratch.m_fe_values.dof_indices_starting_at(i + 1))
+       data.m_cell_matrix(i, j) = data.m_cell_matrix(j, i);
+ }
 
   template <int dim> void PhaseFieldSplitSolve<dim>::assemble_rhs_displacement()
   {
@@ -3770,7 +4362,9 @@ namespace PhaseField
 
     // if there is surface pressure, this surface pressure always applied to the
     // reference configuration
-    const unsigned int face_pressure_id = 100;
+      unsigned int face_pressure_id = 100;
+      if (m_parameters.m_scenario == 12)
+          face_pressure_id = 1;
     const double p0 = 0.0;
 
     for (const auto &face : cell->face_iterators())
@@ -3784,7 +4378,7 @@ namespace PhaseField
           const Tensor<1, dim> &N =
               scratch.m_fe_face_values.normal_vector(f_q_point);
 
-          const double pressure = p0 * time_ramp;
+            const double pressure = p0;//p0 * time_ramp;
           const Tensor<1, dim> traction = pressure * N;
 
           for (const unsigned int i : scratch.m_fe_values.dof_indices())
@@ -3814,6 +4408,39 @@ namespace PhaseField
       }
     }
   }
+
+  template <int dim> void PhaseFieldSplitSolve<dim>::load_previous_vectors()
+  {
+      m_old_delta_u=m_solution_delta_u;
+      m_old_velo=m_solution_velo;
+      m_old_acc=m_solution_acc;
+  }
+
+  template <int dim> void PhaseFieldSplitSolve<dim>::combine_vectors(double beta, double gamma)
+  {
+      double dt=m_time.get_delta_t();
+      m_system_rhs_attached= 1.0/(beta*dt)*m_old_velo
+                            +(1.0-2*beta)/(2*beta)*m_old_acc;
+      
+      /*m_system_rhs_attached=1.0/(beta*dt*dt)*m_solution_previous_timestep_displacement
+                           +1.0/(beta*dt)*m_old_velo
+                           +(1.0-2*beta)/(2*beta)*m_old_acc;*/
+
+  }
+  template <int dim> void PhaseFieldSplitSolve<dim>::update_vectors(double beta, double gamma)
+ {
+      double dt=m_time.get_delta_t();
+      // update a_{n+1}
+      m_solution_acc=1.0/(beta*dt*dt)*m_solution_delta_u
+                     - 1.0/(beta*dt)*m_old_velo
+                     - (1.0-2*beta)/(2*beta)*m_old_acc;
+      /*m_solution_acc=
+     1.0/(beta*dt*dt)*(m_solution_displacement-m_solution_previous_timestep_displacement)
+                     - 1.0/(beta*dt)*m_old_velo
+                     - (1.0-2*beta)/(2*beta)*m_old_acc;*/
+      // update v_{n+1}
+      m_solution_velo=m_old_velo+dt*(gamma*m_solution_acc+(1.0-gamma)*m_old_acc);
+ }
 
   template <int dim>
   void PhaseFieldSplitSolve<dim>::solve_linear_system_phasefield(
@@ -3895,6 +4522,7 @@ namespace PhaseField
     newton_itrs_required = solve_nonlinear_displacement_newton_raphson(
         solution_delta_displacement, itr_stagger);
     m_solution_displacement += solution_delta_displacement;
+    m_solution_delta_u=solution_delta_displacement;
     return newton_itrs_required;
   }
 
@@ -3989,6 +4617,15 @@ namespace PhaseField
   }
 
   template <int dim>
+  void PhaseFieldSplitSolve<dim>::simplified_linear_solver()
+  {
+      SparseDirectUMFPACK A_direct;
+      A_direct.initialize(m_system_matrix_displacement);
+      A_direct.vmult(m_solution_delta_u, m_system_rhs_displacement);
+      m_constraints_displacement.distribute(m_solution_delta_u);
+  }
+
+  template <int dim>
   unsigned int
   PhaseFieldSplitSolve<dim>::solve_nonlinear_displacement_newton_raphson(
       Vector<double> &solution_delta_displacement, unsigned int itr_stagger)
@@ -4003,11 +4640,19 @@ namespace PhaseField
     // see make_constraints_displacement() and
     // make_constraints_phasefield() for details
     unsigned int newton_iteration = 0;
+    m_constraints_acc.clear();
+    m_constraints_acc.close();
+    assemble_system_mass();
+    m_system_matrix_mass.vmult(m_delta_F, m_system_rhs_attached);
+
     for (; newton_iteration <= m_parameters.m_max_iterations_newton;
          ++newton_iteration)
     {
       make_constraints_displacement(newton_iteration, itr_stagger);
       assemble_system_displacement();
+      m_system_rhs_displacement+=m_delta_F;
+      m_constraints_displacement.distribute(m_system_rhs_displacement);
+      
 
       get_error_residual_displacement(m_error_residual_displacement);
 
@@ -4116,6 +4761,15 @@ namespace PhaseField
     data_out.add_data_vector(m_dof_handler_displacement, m_solution_displacement,
                              solution_name,
                              data_component_interpretation_mechanical);
+      
+    std::vector<DataComponentInterpretation::DataComponentInterpretation>
+          data_component_interpretation_mechanical1(
+              dim, DataComponentInterpretation::component_is_part_of_vector);
+    std::vector<std::string> solution_name1(dim, "acc");
+
+    data_out.add_data_vector(m_dof_handler_displacement, m_solution_acc,
+                               solution_name1,
+                               data_component_interpretation_mechanical1);
 
     data_out.add_data_vector(m_dof_handler_phasefield, m_solution_phasefield,
                              "phasefield");
@@ -4258,7 +4912,9 @@ namespace PhaseField
 
       // if there is surface pressure, this surface pressure always applied to the
       // reference configuration
-      const unsigned int face_pressure_id = 100;
+        unsigned int face_pressure_id = 100;
+        if (m_parameters.m_scenario == 12)
+            face_pressure_id = 1;
       const double p0 = 0.0;
 
       for (const auto &face : cell->face_iterators())
@@ -4272,7 +4928,7 @@ namespace PhaseField
           {
             const Tensor<1, dim> &N = fe_face_values.normal_vector(f_q_point);
 
-            const double pressure = p0 * time_ramp;
+              const double pressure = p0;//p0 * time_ramp;
             const Tensor<1, dim> traction = pressure * N;
 
             for (const unsigned int i : fe_values.dof_indices())
@@ -4789,7 +5445,8 @@ namespace PhaseField
 
     make_grid();
     setup_system();
-    output_results();
+    initialize_step();
+
 
     while (m_time.current() < m_time.end() - m_time.get_delta_t() * 1.0e-6)
     {
@@ -4802,8 +5459,10 @@ namespace PhaseField
       bool mesh_is_same = false;
 
       // solution from the previous time step
+      load_previous_vectors();
       m_solution_previous_timestep_displacement = m_solution_displacement;
       m_solution_previous_timestep_phasefield = m_solution_phasefield;
+      combine_vectors(0.25, 0.5);
 
       double energy_functional_0 = 0.0;
       double energy_functional_previous = 0.0;
@@ -4867,7 +5526,7 @@ namespace PhaseField
         bool relaxation_flag = false;
 
         unsigned int consecutive_residual_reduction = 0;
-
+        //remove Newton here
         for (; iter_am <= m_parameters.m_max_am_iteration; iter_am++)
         {
           //m_timer.enter_subsection("Outer-loop iterations");
@@ -5193,6 +5852,24 @@ namespace PhaseField
 
           //m_timer.leave_subsection();
         } // 	for (; iter_am <= m_parameters.m_max_am_iteration; iter_am++)
+        // remove Newton here
+        /*m_constraints_acc.clear();
+        m_constraints_acc.close();
+          m_constraints_displacement.clear();
+          m_constraints_displacement.close();
+          assemble_system_stiffness();
+          m_system_matrix_stiffness.vmult(m_internal_force, m_solution_previous_timestep_displacement);
+        assemble_system_mass();
+        m_system_matrix_mass.vmult(m_delta_F, m_system_rhs_attached);
+        make_constraints_displacement(0, 1);
+        assemble_system_displacement();
+        m_system_rhs_displacement+=m_delta_F;
+          m_system_rhs_displacement-=m_internal_force;
+        m_constraints_displacement.distribute(m_system_rhs_displacement);
+        simplified_linear_solver();
+        m_solution_displacement+=m_solution_delta_u;*/
+        
+        //update_qph_incremental(m_solution_displacement, m_solution_phasefield);
 
         if (iter_am == m_parameters.m_max_am_iteration)
         {
@@ -5231,6 +5908,8 @@ namespace PhaseField
 
       m_logfile << "\t\tUpdate history variable" << std::endl;
       update_history_field_step();
+
+      update_vectors(0.25, 0.5);
 
       // if (m_time.get_timestep() % 10 == 0)
       output_results();
