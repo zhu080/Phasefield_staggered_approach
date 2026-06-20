@@ -1209,6 +1209,7 @@ namespace PhaseField
     void make_grid_case_3();
     void make_grid_case_4();
     void make_grid_case_9();
+    void make_grid_case_10();
     void make_grid_case_12();
     void make_grid_case_13();
 
@@ -2399,6 +2400,9 @@ namespace PhaseField
       make_grid_case_4();
     else if (m_parameters.m_scenario == 9)
       make_grid_case_9();
+    else if (m_parameters.m_scenario == 10)
+      make_grid_case_10();
+      
     else if (m_parameters.m_scenario == 12)
       make_grid_case_12();
       
@@ -2864,6 +2868,65 @@ namespace PhaseField
     }
   }
 
+template <int dim> void PhaseFieldSplitSolve<dim>::make_grid_case_10()
+{
+  for (unsigned int i = 0; i < 80; ++i)
+    m_logfile << "*";
+  m_logfile << std::endl;
+  m_logfile << "\t\t\tdynamic" << std::endl;
+  for (unsigned int i = 0; i < 80; ++i)
+    m_logfile << "*";
+  m_logfile << std::endl;
+
+  AssertThrow(dim == 2, ExcMessage("The dimension has to be 2D!"));
+
+  GridIn<dim> gridin;
+  gridin.attach_triangulation(m_triangulation);
+  std::ifstream f("dynamic.msh");
+  gridin.read_msh(f);
+
+  for (const auto &cell : m_triangulation.active_cell_iterators())
+    for (const auto &face : cell->face_iterators())
+    {
+      if (face->at_boundary() == true)
+      {
+        if (std::fabs(face->center()[1] - 0.0) < 1.0e-9)
+          face->set_boundary_id(1);
+        else if (std::fabs(face->center()[1] - 40.0) < 1.0e-9)
+          face->set_boundary_id(1);
+        else
+          face->set_boundary_id(2);
+      }
+    }
+
+  m_triangulation.refine_global(m_parameters.m_global_refine_times);
+  if (m_parameters.m_refinement_strategy == "pre-refine")
+  {
+    unsigned int material_id;
+    double length_scale;
+    for (unsigned int i = 0; i < m_parameters.m_local_prerefine_times; i++)
+    {
+      for (const auto &cell : m_triangulation.active_cell_iterators())
+      {
+        cell->set_material_id(0);
+        if ((std::fabs(cell->center()[1] - 20.0) < 10) &&
+            (cell->center()[0] > 45))
+        {
+            cell->set_refine_flag();
+        }
+      }
+      m_triangulation.execute_coarsening_and_refinement();
+    }
+  }
+  
+  else
+  {
+    AssertThrow(
+        false,
+        ExcMessage("Selected mesh refinement strategy not implemented!"));
+  }
+}
+
   template <int dim> void PhaseFieldSplitSolve<dim>::make_grid_case_12()
   {
     for (unsigned int i = 0; i < 80; ++i)
@@ -3131,7 +3194,12 @@ template <int dim> void PhaseFieldSplitSolve<dim>::make_grid_case_13()
       const FEValuesExtractors::Scalar x_displacement(0);
       const FEValuesExtractors::Scalar y_displacement(1);
       const FEValuesExtractors::Scalar z_displacement(2);
-      if (m_parameters.m_scenario == 12)
+      if (m_parameters.m_scenario == 10)
+      {
+          std::cout<<"no initial displacement."<<std::endl;
+      }
+      
+      else if (m_parameters.m_scenario == 12)
       {
         // Dirichlet B.C. left surface (x = 0)
         const int boundary_id_left_surface = 0;
@@ -3180,7 +3248,7 @@ template <int dim> void PhaseFieldSplitSolve<dim>::make_grid_case_13()
         m_constraints_displacement.set_inhomogeneity(node_rightbottom[1], 0.0);*/
       }
       
-      if (m_parameters.m_scenario == 13)
+      else if (m_parameters.m_scenario == 13)
       {
         // Dirichlet B.C. left surface (x = 0)
         const int boundary_id_left_surface = 0;
@@ -3414,6 +3482,12 @@ template <int dim> void PhaseFieldSplitSolve<dim>::make_grid_case_13()
           }
         }
       }
+        
+      else if (m_parameters.m_scenario == 10)
+      {
+          std::cout<<"Dirichlet boundary condition is assigned by pressure rather than displacement."<<std::endl;
+      }
+      
       else if (m_parameters.m_scenario == 12)
       {
         // Dirichlet B.C. left surface (x = 0)
@@ -3501,7 +3575,11 @@ template <int dim> void PhaseFieldSplitSolve<dim>::make_grid_case_13()
      const FEValuesExtractors::Scalar x_acc(0);
      const FEValuesExtractors::Scalar y_acc(1);
      const FEValuesExtractors::Scalar z_acc(2);
-     if (m_parameters.m_scenario == 12)
+     if (m_parameters.m_scenario == 10)
+     {
+         std::cout<<"no need to assign boundary condition for acc."<<std::endl;
+     }
+     else if (m_parameters.m_scenario == 12)
      {
        // Dirichlet B.C. left surface (x = 0)
        const int boundary_id_left_surface = 0;
@@ -3550,7 +3628,7 @@ template <int dim> void PhaseFieldSplitSolve<dim>::make_grid_case_13()
        m_constraints_acc.set_inhomogeneity(node_rightbottom[1], 0.0);*/
      }
      
-     if (m_parameters.m_scenario == 13)
+     else if (m_parameters.m_scenario == 13)
      {
        // Dirichlet B.C. left surface (x = 0)
        const int boundary_id_left_surface = 0;
@@ -3962,7 +4040,7 @@ void PhaseFieldSplitSolve<dim>::assemble_system_one_cell_stiffness(
                   m_parameters.m_z_component * 1.0);
 
   const FEValuesExtractors::Vector displacement(0);
-  const double rho=10.0e-9;
+  const double rho=2.45e-9;
   const double dt=m_time.get_delta_t();
   const double beta=0.25;
 
@@ -4011,9 +4089,7 @@ void PhaseFieldSplitSolve<dim>::assemble_system_one_cell_stiffness(
 
   // if there is surface pressure, this surface pressure always applied to the
   // reference configuration
-  unsigned int face_pressure_id = 100;
-  if (m_parameters.m_scenario == 12)
-      face_pressure_id = 1;
+  unsigned int face_pressure_id = 1;
   const double p0 = 0.0;
 
   for (const auto &face : cell->face_iterators())
@@ -4073,7 +4149,7 @@ void PhaseFieldSplitSolve<dim>::assemble_system_one_cell_stiffness(
                     m_parameters.m_z_component * 1.0);
 
     const FEValuesExtractors::Vector displacement(0);
-    const double rho=10.0e-9;
+    const double rho=2.45e-9;
     const double dt=m_time.get_delta_t();
     const double beta=0.25;
 
@@ -4123,10 +4199,8 @@ void PhaseFieldSplitSolve<dim>::assemble_system_one_cell_stiffness(
 
     // if there is surface pressure, this surface pressure always applied to the
     // reference configuration
-      unsigned int face_pressure_id = 100;
-      if (m_parameters.m_scenario == 12)
-          face_pressure_id = 1;
-    const double p0 = 0.0;
+    unsigned int face_pressure_id = 1;
+    const double p0 = 1.0;
 
     for (const auto &face : cell->face_iterators())
       if (face->at_boundary() && face->boundary_id() == face_pressure_id)
@@ -4184,7 +4258,7 @@ void PhaseFieldSplitSolve<dim>::assemble_system_one_cell_stiffness(
                   m_parameters.m_z_component * 1.0);
 
    const FEValuesExtractors::Vector displacement(0);
-   const double rho=10.0e-9;
+   const double rho=2.45e-9;
 
    for (const unsigned int q_point :
         scratch.m_fe_values.quadrature_point_indices())
@@ -4231,10 +4305,9 @@ void PhaseFieldSplitSolve<dim>::assemble_system_one_cell_stiffness(
 
    // if there is surface pressure, this surface pressure always applied to the
    // reference configuration
-      unsigned int face_pressure_id = 100;
-      if (m_parameters.m_scenario == 12)
-          face_pressure_id = 1;
-   const double p0 = 0.0;
+      unsigned int face_pressure_id = 1;
+
+   const double p0 = 1.0;
 
    for (const auto &face : cell->face_iterators())
      if (face->at_boundary() && face->boundary_id() == face_pressure_id)
@@ -4362,10 +4435,8 @@ void PhaseFieldSplitSolve<dim>::assemble_system_one_cell_stiffness(
 
     // if there is surface pressure, this surface pressure always applied to the
     // reference configuration
-      unsigned int face_pressure_id = 100;
-      if (m_parameters.m_scenario == 12)
-          face_pressure_id = 1;
-    const double p0 = 0.0;
+      unsigned int face_pressure_id = 1;
+    const double p0 = 1.0;
 
     for (const auto &face : cell->face_iterators())
       if (face->at_boundary() && face->boundary_id() == face_pressure_id)
@@ -4631,7 +4702,8 @@ void PhaseFieldSplitSolve<dim>::assemble_system_one_cell_stiffness(
       Vector<double> &solution_delta_displacement, unsigned int itr_stagger)
   {
     Vector<double> newton_update(m_dof_handler_displacement.n_dofs());
-
+    m_solution_delta_u=0.0;
+      
     m_error_residual_displacement.reset();
     m_error_update_displacement.reset();
 
@@ -4640,14 +4712,18 @@ void PhaseFieldSplitSolve<dim>::assemble_system_one_cell_stiffness(
     // see make_constraints_displacement() and
     // make_constraints_phasefield() for details
     unsigned int newton_iteration = 0;
-    m_constraints_acc.clear();
-    m_constraints_acc.close();
-    assemble_system_mass();
-    m_system_matrix_mass.vmult(m_delta_F, m_system_rhs_attached);
 
     for (; newton_iteration <= m_parameters.m_max_iterations_newton;
          ++newton_iteration)
     {
+      //m_constraints_acc.clear();
+      //m_constraints_acc.close();
+      assemble_system_mass();
+      double dt=m_time.get_delta_t();
+      double beta=0.25;
+      double gamma=0.5;
+      m_system_rhs_attached-=1.0/(beta*dt*dt)*newton_update;
+      m_system_matrix_mass.vmult(m_delta_F, m_system_rhs_attached);
       make_constraints_displacement(newton_iteration, itr_stagger);
       assemble_system_displacement();
       m_system_rhs_displacement+=m_delta_F;
@@ -4655,7 +4731,10 @@ void PhaseFieldSplitSolve<dim>::assemble_system_one_cell_stiffness(
       
 
       get_error_residual_displacement(m_error_residual_displacement);
-
+      /*if (m_time.get_timestep()==1&&newton_iteration > 0)
+      {m_error_residual_displacement.m_norm=0.0;}*/
+          
+        std::cout<<m_time.get_timestep()<<"------"<<newton_iteration<<"------"<<m_error_residual_displacement.m_norm<<std::endl;
       if ((newton_iteration > 0 &&
            m_error_residual_displacement.m_norm < m_parameters.m_tol_u_newton) ||
           (newton_iteration == m_parameters.m_max_iterations_newton)
@@ -4675,7 +4754,7 @@ void PhaseFieldSplitSolve<dim>::assemble_system_one_cell_stiffness(
       get_error_update_displacement(newton_update, m_error_update_displacement);
 
       solution_delta_displacement += newton_update;
-
+      //m_solution_delta_u=solution_delta_displacement;
       Vector<double> solution_delta_phasefield(m_dof_handler_phasefield.n_dofs());
       solution_delta_phasefield = 0.0;
 
@@ -4912,10 +4991,8 @@ void PhaseFieldSplitSolve<dim>::assemble_system_one_cell_stiffness(
 
       // if there is surface pressure, this surface pressure always applied to the
       // reference configuration
-        unsigned int face_pressure_id = 100;
-        if (m_parameters.m_scenario == 12)
-            face_pressure_id = 1;
-      const double p0 = 0.0;
+        unsigned int face_pressure_id = 1;
+      const double p0 = 1.0;
 
       for (const auto &face : cell->face_iterators())
       {
@@ -5911,7 +5988,7 @@ void PhaseFieldSplitSolve<dim>::assemble_system_one_cell_stiffness(
 
       update_vectors(0.25, 0.5);
 
-      // if (m_time.get_timestep() % 10 == 0)
+       if (m_time.get_timestep() % 10 == 0)
       output_results();
 
       m_logfile << "\t\tEnergy functional (J) = " << std::fixed
